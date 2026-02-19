@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub-id') // DockerHub login stored in Jenkins
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-id')
         DOCKERHUB_USERNAME = 'your-dockerhub-username'
         BACKEND_IMAGE = "${DOCKERHUB_USERNAME}/backend-app:latest"
         FRONTEND_IMAGE = "${DOCKERHUB_USERNAME}/frontend-app:latest"
@@ -12,6 +12,15 @@ pipeline {
         stage('Clone Repository') {
             steps {
                 git branch: 'main', url: 'https://github.com/<your-github-username>/cloud-native-cicd.git'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQubeServer') {
+                    sh 'sonar-scanner -Dsonar.projectKey=backend-app -Dsonar.sources=backend'
+                    sh 'sonar-scanner -Dsonar.projectKey=frontend-app -Dsonar.sources=frontend/src'
+                }
             }
         }
 
@@ -31,6 +40,13 @@ pipeline {
             }
         }
 
+        stage('Trivy Scan') {
+            steps {
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL $BACKEND_IMAGE || true"
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL $FRONTEND_IMAGE || true"
+            }
+        }
+
         stage('Push Docker Images') {
             steps {
                 sh 'docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_CREDENTIALS'
@@ -42,10 +58,8 @@ pipeline {
         stage('Deploy to Kubernetes') {
             steps {
                 sh 'kubectl apply -f k8s/backend-deployment.yaml'
-             sh 'kubectl apply -f k8s/frontend-deployment.yaml'
+                sh 'kubectl apply -f k8s/frontend-deployment.yaml'
             }
         }
     }
 }
-
-
