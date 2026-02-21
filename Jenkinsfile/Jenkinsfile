@@ -42,8 +42,8 @@ pipeline {
 
         stage('Trivy Scan') {
             steps {
-                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL $BACKEND_IMAGE || true"
-                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL $FRONTEND_IMAGE || true"
+                sh "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity HIGH,CRITICAL $BACKEND_IMAGE"
+                sh "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity HIGH,CRITICAL $FRONTEND_IMAGE"
             }
         }
 
