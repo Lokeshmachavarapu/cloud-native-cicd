@@ -2,16 +2,21 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_CREDENTIALS = credentials('dockerhub-id')
         DOCKERHUB_USERNAME = 'your-dockerhub-username'
-        BACKEND_IMAGE = "${DOCKERHUB_USERNAME}/backend-app:latest"
-        FRONTEND_IMAGE = "${DOCKERHUB_USERNAME}/frontend-app:latest"
+        BACKEND_IMAGE = "${DOCKERHUB_USERNAME}/backend-app:${BUILD_NUMBER}"
+        FRONTEND_IMAGE = "${DOCKERHUB_USERNAME}/frontend-app:${BUILD_NUMBER}"
+    }
+
+    options {
+        timestamps()
     }
 
     stages {
+
         stage('Clone Repository') {
             steps {
-                git branch: 'main', url: 'https://github.com/<your-github-username>/cloud-native-cicd.git'
+                git branch: 'main',
+                    url: 'https://github.com/<your-github-username>/cloud-native-cicd.git'
             }
         }
 
@@ -24,42 +29,87 @@ pipeline {
             }
         }
 
-        stage('Build Backend Docker Image') {
+        stage('Quality Gate') {
             steps {
-                dir('backend') {
-                    sh 'docker build -t $BACKEND_IMAGE .'
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        stage('Build Frontend Docker Image') {
-            steps {
-                dir('frontend') {
-                    sh 'docker build -t $FRONTEND_IMAGE .'
+        stage('Build Docker Images') {
+            parallel {
+                stage('Build Backend') {
+                    steps {
+                        dir('backend') {
+                            sh "docker build -t ${BACKEND_IMAGE} ."
+                        }
+                    }
+                }
+                stage('Build Frontend') {
+                    steps {
+                        dir('frontend') {
+                            sh "docker build -t ${FRONTEND_IMAGE} ."
+                        }
+                    }
                 }
             }
         }
 
-        stage('Trivy Scan') {
+        stage('Trivy Security Scan') {
             steps {
-                sh "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity HIGH,CRITICAL $BACKEND_IMAGE"
-                sh "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy image --severity HIGH,CRITICAL $FRONTEND_IMAGE"
+                sh """
+                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                aquasec/trivy image --exit-code 1 \
+                --severity HIGH,CRITICAL ${BACKEND_IMAGE}
+                """
+
+                sh """
+                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                aquasec/trivy image --exit-code 1 \
+                --severity HIGH,CRITICAL ${FRONTEND_IMAGE}
+                """
             }
         }
 
         stage('Push Docker Images') {
             steps {
-                sh 'docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_CREDENTIALS'
-                sh 'docker push $BACKEND_IMAGE'
-                sh 'docker push $FRONTEND_IMAGE'
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-id',
+                    usernameVariable: 'USERNAME',
+                    passwordVariable: 'PASSWORD'
+                )]) {
+                    sh """
+                    echo \$PASSWORD | docker login -u \$USERNAME --password-stdin
+                    docker push ${BACKEND_IMAGE}
+                    docker push ${FRONTEND_IMAGE}
+                    """
+                }
             }
         }
 
         stage('Deploy to Kubernetes') {
-            steps {
-                sh 'kubectl apply -f k8s/backend-deployment.yaml'
-                sh 'kubectl apply -f k8s/frontend-deployment.yaml'
+            when {
+                branch 'main'
             }
+            steps {
+                sh """
+                kubectl set image deployment/backend backend=${BACKEND_IMAGE}
+                kubectl set image deployment/frontend frontend=${FRONTEND_IMAGE}
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "✅ Pipeline completed successfully!"
+        }
+        failure {
+            echo "❌ Pipeline failed. Check logs."
+        }
+        always {
+            cleanWs()
         }
     }
 }
